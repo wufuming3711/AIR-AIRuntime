@@ -1,0 +1,71 @@
+{
+    "model_list": [
+        "algo1_det_cls",
+        "algo2_det",
+        "yolov8x"
+    ],
+    "algo1_det_cls": 
+        {
+            "device": 1,
+            "workflow":{
+                "node_set": ["node1", "node2", "node3"],
+                "node1": {
+                    "model_type": "detection",
+                    "model_file": "det_in640x640_pt20241029_dynamic1_yolov8x_dynamic1_TeslaT4_v08112024.engine",
+                    "height": 640,
+                    "width": 640,
+                    "out_num": 80,
+                    "output_id": [14],
+                    "preprocess": "letterbox"
+                },
+                "node2":{
+                    "model_type": "operation",
+                    "model_file": "imageCrop",
+                    "max_len": 32
+                },
+                "node3": {
+                    "model_type": "classification",
+                    "model_file": "cls_in64x64_out6_dynamic1_20241013pt_hrnet_best_dynamic1_TeslaT4_v09112024.engine",
+                    "height": 64,
+                    "width": 64,
+                    "out_num": 6,
+                    "preprocess": "resizeNormalize",
+                    "output_id": []
+                    }
+            }
+        },
+    "algo2_det": 
+        {
+            "device": 0,
+            "workflow":{
+                "node_set": ["node1"],
+                "node1": 
+                    {
+                        "model_type": "classification",
+                        "model_file": "cls_in64x64_out6_dynamic1_20241013pt_hrnet_best_dynamic1_TeslaT4_v09112024.engine",
+                        "output_id": [],
+                        "height": 64,
+                        "width": 64,
+                        "out_num": 6,
+                        "preprocess": "resize_and_255"
+                    }
+            }
+        },
+    "yolov8x": 
+        {
+            "device": 0,
+            "workflow":{
+                "node_set": ["node1"],
+                "node1": 
+                    {
+                        "model_type": "detection",
+                        "model_file": "det_in640x640_pt20241029_dynamic1_yolov8x_dynamic1_TeslaT4_v08112024.engine",
+                        "output_id": [0],
+                        "height": 640,
+                        "width": 640,
+                        "out_num": 80,
+                        "preprocess": "letterbox"
+                    }
+            }
+        }
+}

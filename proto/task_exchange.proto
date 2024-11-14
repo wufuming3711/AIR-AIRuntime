@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+// 定义协议的包名，便于 Go 代码的生成与组织
+package pb;
+option go_package = ".;pb";
+
+// 枚举类型：表示支持的图片格式
+enum ImageFormat {
+  // 未知格式
+  IMAGE_FORMAT_UNKNOWN = 0;
+  // PNG 格式
+  IMAGE_FORMAT_PNG = 1;
+  // JPEG 格式
+  IMAGE_FORMAT_JPEG = 2;
+}
+// 枚举类型：表示支持的检测算法类型
+enum DetectionAlgorithm {
+  // 未知检测算法
+  DETECTION_ALGORITHM_UNKNOWN = 0;
+
+  // 鸟类检测
+  DETECTION_ALGORITHM_BIRD_LOW_ACCURACY = 1;
+  DETECTION_ALGORITHM_BIRD_HUNAN_YONGZHOU = 2;
+  DETECTION_ALGORITHM_BIRD_FUJIAN_QUANZHOU = 3;
+
+  // 植物种类识别
+  DETECTION_ALGORITHM_PLANT_SPECIES = 4;
+
+  // 车辆入侵检测
+  DETECTION_ALGORITHM_VEHICLE_INTRUSION_HIGH_ACCURACY = 5;
+  DETECTION_ALGORITHM_VEHICLE_INTRUSION_LOW_ACCURACY = 6;
+
+  // 人类入侵检测
+  DETECTION_ALGORITHM_HUMAN_INTRUSION_HIGH_ACCURACY = 7;
+  DETECTION_ALGORITHM_HUMAN_INTRUSION_LOW_ACCURACY = 8;
+
+  // 裸土检测
+  DETECTION_ALGORITHM_BARE_SOIL_HIGH_ACCURACY = 9;
+
+  // 船只入侵检测
+  DETECTION_ALGORITHM_SHIP_INTRUSION_HIGH_ACCURACY = 10;
+
+  // 火灾检测
+  DETECTION_ALGORITHM_FIRE_HIGH_ACCURACY = 11;
+
+  // 非法建筑检测
+  DETECTION_ALGORITHM_ILLEGAL_BUILDING_HIGH_ACCURACY = 12;
+
+  // 非法钓鱼检测
+  DETECTION_ALGORITHM_ILLEGAL_ANGLING_LOW_ACCURACY = 13;
+
+  // 非法捕鱼检测
+  DETECTION_ALGORITHM_ILLEGAL_FISHING_LOW_ACCURACY = 14;
+
+  // 垃圾检测
+  DETECTION_ALGORITHM_GARBAGE_LOW_ACCURACY = 15;
+
+  // 物种模型检测
+  DETECTION_ALGORITHM_SPECIES_MODEL = 16;
+
+  // 铁塔算法
+  DETECTION_ALGORITHM_TIE_TA_HUMAN = 17;
+  DETECTION_ALGORITHM_TIE_TA_FIREWORK = 18;
+  DETECTION_ALGORITHM_TIE_TA_SHIP = 19;
+  DETECTION_ALGORITHM_TIE_TA_BARE_SOIL = 20;
+  DETECTION_ALGORITHM_TIE_TA_VEHICLE = 21;
+  DETECTION_ALGORITHM_TIE_TA_BIRD = 22;
+}
+
+// 通用视频参数，适用于不同的视频任务
+message VideoCommonArgs {
+  // 帧步长：指定处理视频时连续多少帧（单位：帧）
+  uint32 frame_step = 1;
+  // 跳过的帧数：指定在处理视频时跳过的帧数
+  uint32 skip_step = 2;
+  // 视频录制时长：单位为秒，指定录制的时长
+  uint32 video_record_duration_in_seconds = 3;
+}
+
+// 流媒体任务，包含视频任务的参数以及视频流地址
+message StreamTask {
+  // 视频通用参数
+  VideoCommonArgs args = 1;
+  // 需要调用的算法
+  repeated DetectionAlgorithm algorithms = 2;
+  // 视频流的URL地址
+  string stream_url = 3;
+}
+
+// 文件任务，包含视频参数和文件路径
+message FileTask {
+  // 视频通用参数
+  VideoCommonArgs args = 1;
+  // 需要调用的算法
+  repeated DetectionAlgorithm algorithms = 2;
+  // 需要处理的文件路径
+  string file_path = 3;
+}
+
+// 图片任务，包含图片格式及图片数据
+message ImageTask {
+  // 需要调用的算法
+  repeated DetectionAlgorithm algorithms = 1;
+  // 图片的格式
+  ImageFormat img_format = 2;
+  // 图片的字节数据
+  bytes img = 3;
+}
+
+// AI结果的响应消息 
+message OnAIResultGotReply {
+  // 结果数据，包含目标检测框和相关信息 
+  message Result {
+    // 矩形框的坐标
+    message Rect {
+      // 矩形框的左上角 X 坐标
+      uint32 minX = 1;
+      // 矩形框的右下角 X 坐标
+      uint32 maxX = 2;
+      // 矩形框的左上角 Y 坐标
+      uint32 minY = 3;
+      // 矩形框的右下角 Y 坐标
+      uint32 maxY = 4;
+    }
+    // 目标框的坐标
+    Rect rect = 1;
+    // 目标的标签ID
+    uint32 label = 2;
+    // 目标的识别概率
+    double prob = 3;
+	/*
+    // 对应算法
+    DetectionAlgorithm algo = 4;
+	*/
+  }
+
+  // 结果集合的包装器
+  message ResultWrapper {
+    // 多个检测结果
+    repeated Result rs = 1;
+    // 图像数据，图像的字节流
+    bytes imageData = 2;
+    // 图像格式
+    ImageFormat fmt = 3;
+    // 对应算法
+    DetectionAlgorithm algo = 4;
+  }
+  repeated ResultWrapper result = 1;
+}
+
+// 定义 TaskExchange 服务，提供不同类型的任务请求
+service TaskExchange {
+  // 请求视频流任务，返回 AI 结果流
+  rpc RequestForStream(StreamTask) returns(stream OnAIResultGotReply);
+
+  // 请求文件任务，返回 AI 结果流
+  rpc RequestForFile(FileTask) returns(stream OnAIResultGotReply);
+
+  // 请求图片任务，返回 AI 结果
+  rpc RequestForImage(ImageTask) returns(OnAIResultGotReply);
+}
