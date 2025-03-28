@@ -1,0 +1,25 @@
+                        /* 敢删除试试
+                            std::vector<cv::Mat> buffer;
+                            for (auto & box : sigImgBoxes_vec) {
+                                buffer.push_back(box.cvmatCropImage_);
+                            }
+                            nodePtr->sptrNodeModel_->commitImages(
+                                buffer,
+                                preprocess
+                            ); 
+                            nodePtr->sptrNodeModel_->postprocess();
+                            std::vector<std::vector<network_space::Object>>& curtOutput_vec 
+                                = nodePtr->sptrNodeModel_->baseAlgoParser.inOutPutData.output;
+                            for (int i = 0; i < boxNum; ++i) {
+                                std::vector<network_space::Object>& obj_vec = curtOutput_vec[i];
+                                network_space::Object& obj = obj_vec[0];
+                                sigImgBoxes_vec[i].label_i = obj.label_i;
+                            }
+                        */
+
+src/workflow/workflowBase.cc
+                    // if (modelFilePath != "image_crop") {
+                    if (modelType->valuestring != "operation") {  // 跳过操作符节点
+                        if (modelFilePath[0] != '/' && modelFilePath.find(":") == std::string::npos) {
+                            modelFilePath = this->sModelZoo_ + "/" + modelFilePath;
+                        }

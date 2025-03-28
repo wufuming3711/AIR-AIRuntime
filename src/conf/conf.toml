@@ -1,0 +1,19 @@
+[tls]
+caCertPath = "../tls/ca.crt"
+keyPath = "../tls/127.key"
+certPath = "../tls/127.crt"
+[gRPC]
+listenPort = 18777
+listenHost = "0.0.0.0"
+[decode]
+imageMaxHeight = 720
+imageMaxWidth = 1280
+execPath = "./saida_decoder"
+[ai]
+gpuCount = 1
+detectionAlgorithmStart = 1
+detectionAlgorithmEnd = 28
+[algoConfig]
+logDir = "./log/"
+configWorkflow = "../config_workflow.json"
+modelZoo = "../../95_Services_model_zoo/"

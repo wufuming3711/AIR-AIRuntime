@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+// 定义协议的包名，便于 Go 代码的生成与组织
+package pb;
+option go_package = ".;pb";
+option java_package = "org.example.pb";
+// 枚举类型：表示支持的图片格式
+enum ImageFormat {
+  // 未知格式
+  IMAGE_FORMAT_UNKNOWN = 0;
+  // PNG 格式
+  IMAGE_FORMAT_PNG = 1;
+  // JPEG 格式
+  IMAGE_FORMAT_JPEG = 2;
+}
+// 枚举类型：表示支持的检测算法类型
+enum DetectionAlgorithm {
+  // 未知检测算法
+  DETECTION_ALGORITHM_UNKNOWN = 0;
+
+  N_DET_OCCU = 1;           // "普通_消防通道占用检测",
+  N_DET_PERDUTY = 2;        // "普通_人员在岗",
+  N_DET_SAFETY = 3;         // "普通_安全生产检测",
+  U_DET_CAR = 4;            // "无人机_车辆检测",
+  U_DET_FLOAT = 5;          // "无人机_水面漂浮物检测",
+  U_DET_TRASH = 6;          // "无人机_垃圾检测",
+  H_DET_BIRD_AH = 7;        // "高点_鸟类检测_安徽",
+  H_DET_CAR = 8;            // "高点_车辆检测",
+  H_DET_FIRE = 9;           // "高点_烟火检测",
+  H_DET_ILLCATCH = 10;      // "高点_违法捕捞",
+  H_DET_ILLCONST = 11;      // "高点_违法搭建",
+  H_DET_ILLFISH = 12;       // "高点_非法垂钓",
+  H_DET_LAND = 13;          // "高点_土壤裸露",
+  H_DET_PERSON = 14;        // "高点_人员检测",
+  H_DET_SHIP = 15;          // "高点_船只检测",
+  H_DET_TRASH = 16;         // "高点_垃圾裸露",
+  N_DET_CIG = 17;           // "普通_吸烟",
+  N_DET_ELE = 18;           // "普通_电梯中电瓶车检测",
+  N_DET_FALL = 19;          // "普通_人员倒地",
+  N_DET_FIRE = 20;          // "普通_烟火检测",
+  N_DET_FIREEX = 21;        // "普通_灭火器检测",
+  N_DET_PERCOUNT = 22;      // "普通_人数统计",
+  N_DET_PHONE = 23;         // "普通_打电话",
+  U_DET_CONVEH = 24;        // "无人机_工程车检测",
+  U_DET_PERCAR = 25;        // "无人机_人车检测"
+  N_DET_ENGINEVEICHLE = 26; // "普通_工程车--------工程车辆",
+  U_DET_SHIP = 27;          // "无人机_船只检测----非法船只",
+  U_DET_FIRE = 28;          // "无人机_烟火检测----烟火识别"
+}
+
+// 通用视频参数，适用于不同的视频任务
+message VideoCommonArgs {
+  // 是否只分析关键帧,如果只分析关键帧,那么会忽略 frame_step 和 skip_step 参数,
+  // 特别的 如果frame_step 和 skip_step 传输了无效值比如0,0 也会只处理关键帧
+  bool key_frame_only = 1;
+  // 帧步长：指定处理视频时连续多少帧（单位：帧）
+  uint32 frame_step = 2;
+  // 跳过的帧数：指定在处理视频时跳过的帧数
+  uint32 skip_step = 3;
+  // 视频录制时长：单位为秒，指定录制的时长
+  uint32 video_record_duration_in_seconds = 4;
+  // 上报间隔: 单位为毫秒, 如果距离上次上报不超过这个值,则会丢弃,当然 这是非常特定场景的设计
+  // 比如人员检测,如果是这样的情况下,猥琐男子周某跟随女神ABC,同时经过一个IPC,这时候,
+  // 女神ABC被拍到了,猥琐男子被拍到了,分析到了,丢弃了
+  // 所以这个仅在 key_frame_only 为true 时读取,比如看一个厨房哪个B没带帽子,这种消极的场景中这样的操作是有效的
+  uint32 callback_interval_in_mill_seconds = 5;
+}
+
+// 流媒体任务，包含视频任务的参数以及视频流地址
+message StreamTask {
+  // 视频通用参数
+  VideoCommonArgs args = 1;
+  // 需要调用的算法
+  repeated DetectionAlgorithm algorithms = 2;
+  // 视频流的URL地址
+  string stream_url = 3;
+}
+
+// 文件任务，包含视频参数和文件路径
+message FileTask {
+  // 视频通用参数
+  VideoCommonArgs args = 1;
+  // 需要调用的算法
+  repeated DetectionAlgorithm algorithms = 2;
+  // 需要处理的文件路径
+  string file_path = 3;
+}
+
+// 图片任务，包含图片格式及图片数据
+message ImageTask {
+  // 需要调用的算法
+  repeated DetectionAlgorithm algorithms = 1;
+  // 图片的格式
+  ImageFormat img_format = 2;
+  // 图片的字节数据
+  bytes img = 3;
+}
+// AI结果的响应消息
+message OnAIResultGotReply {
+  // 结果数据，包含目标检测框和相关信息
+  message Result {
+    // 矩形框的坐标
+    message Rect {
+      // 矩形框的左上角 X 坐标
+      uint32 minX = 1;
+      // 矩形框的右下角 X 坐标
+      uint32 maxX = 2;
+      // 矩形框的左上角 Y 坐标
+      uint32 minY = 3;
+      // 矩形框的右下角 Y 坐标
+      uint32 maxY = 4;
+    }
+    // 目标框的坐标
+    Rect rect = 1;
+    // 目标的标签ID
+    uint32 label = 2;
+    // 目标的识别概率
+    double prob = 3;
+  }
+  // 结果集合的包装器
+  message ResultWrapper  {
+    // 这个是否需要上报->若为TRUE,哪怕 rs 字段为空数组,也会推送到客户端
+    bool shouldUpdate = 1;
+    // 这个算法的多个检测结果
+    repeated Result rs = 2;
+    // 对应算法
+    DetectionAlgorithm algo = 3;
+    // 算法执行描述
+    string desc = 4;
+  }
+  // 图像格式
+  ImageFormat fmt = 1;
+  // 图像数据，图像的字节流
+  bytes imageData = 2;
+  repeated ResultWrapper result = 3;
+  uint64 timestamp = 4;
+}
+
+// 定义 TaskExchange 服务，提供不同类型的任务请求
+service TaskExchange {
+  // 请求视频流任务，返回 AI 结果流
+  rpc RequestForStream(StreamTask) returns(stream OnAIResultGotReply);
+
+  // 请求文件任务，返回 AI 结果流
+  rpc RequestForFile(FileTask) returns(stream OnAIResultGotReply);
+
+  // 请求图片任务，返回 AI 结果
+  rpc RequestForImage(ImageTask) returns(OnAIResultGotReply);
+}

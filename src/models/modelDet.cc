@@ -1,9 +1,19 @@
+#include <nlohmann/json.hpp>
+#include <unistd.h> 
+#include <atomic>
 #include "NvInferPlugin.h"
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include <fstream>
-#include <cmath>      // 包含exp函数的头文件
-#include <algorithm>  // 包含max_element函数
+#include <cmath>      
+#include <algorithm>  
+#include <sys/stat.h>
+#include <dirent.h>
+#include <sstream>
+#include <vector>
+#include <map>
+#include <filesystem> // C++17 文件系统库
+#include <ctime>
 
 #include "letterbox.h"
 #include "modelDet.h"
@@ -11,188 +21,76 @@
 #include "common.inl"
 
 
-// TODO 这里的前处理函数不一样 剩下的都一样 统一后可以合并
-bool DETECTOR::commitImages(const std::vector<cv::Mat>& images){
-    networkSpace::EngineParser& engineParser = this->baseAlgoParser.engineParser;
-    int batchSize = images.size();
-    
-    engineParser.curtBatch_i = batchSize;
-    // printf("[INFO] commitImages-> engineParser.curtBatch_i = %d\n", batchSize);
-    
-    int inputH_i = engineParser.inputSizeHW_vec[0][0];
-    int inputW_i = engineParser.inputSizeHW_vec[0][1];
-    
-    engineParser.deviceInPtrs_vec.clear();
-    engineParser.deviceOutPtrs_vec.clear();
-    engineParser.hostOutPtrs_vec.clear();
-
-    // printf("[INFO] commitImages-> 设置context\n");
-    if (!this->setCurtContext(batchSize, 3, inputH_i, inputW_i)) return false;
-
-    // printf("[INFO] commitImages-> 分配输入空间 CUDA\n");
-    for (auto& inBindings : engineParser.inputBindings_vec) {
-        size_t insize = inBindings.size_i * inBindings.dsize_i * batchSize;
-        // printf("[INFO] inBindings.size_i: %d, inBindings.dsize_i: %d, batchSize: %d\n", 
-        //     inBindings.size_i, inBindings.dsize_i, batchSize);
-        void* in_d_ptr;
-        CHECK(cudaMallocAsync(&in_d_ptr, insize, this->stream));
-        engineParser.deviceInPtrs_vec.push_back(in_d_ptr);
-    }
-    // printf("[INFO] commitImages-> engineParser.deviceInPtrs_vec.size() = %d\n", engineParser.deviceInPtrs_vec.size());
-
-    // printf("[INFO] commitImages-> 分配输出空间 CUDA与CPU \n");
-    for (auto& outBindings : engineParser.outputBindings_vec) {
-        size_t outsize = outBindings.size_i * outBindings.dsize_i * batchSize;
-        // printf("[INFO] outBindings.size_i: %d, outBindings.dsize_i: %d, batchSize: %d\n", 
-        //     outBindings.size_i, outBindings.dsize_i, batchSize);
-        void * out_d_ptr;
-        CHECK(cudaMallocAsync(&out_d_ptr, outsize, this->stream));
-        engineParser.deviceOutPtrs_vec.push_back(out_d_ptr);
-
-        void * out_h_ptr;
-        CHECK(cudaHostAlloc(&out_h_ptr, outsize, 0));
-        engineParser.hostOutPtrs_vec.push_back(out_h_ptr);
-    }
-
-    // printf("[INFO] commitImages-> 分配输入空间 默认只有一个输入\n");
-    auto& inBinding = engineParser.inputBindings_vec[0];
-    size_t insize = inBinding.size_i * inBinding.dsize_i * batchSize;
-    // printf("[INFO] inBinding.size_i: %d, inBinding.dsize_i: %d, batchSize: %d\n", 
-    //     inBinding.size_i, inBinding.dsize_i, batchSize);
-    void* in_h_ptr = malloc(insize);
-    if (in_h_ptr == nullptr) {
-        printf("[INFO] commitImages-> 分配内存失败 include/models/modelDet.hpp # `void* in_h_ptr = malloc(insize);`\n");
-        return false;
-    }
-    memset(in_h_ptr, 0, insize);
-
-    // 
-    // printf("[INFO] commitImages-> 数据前处理 宽+高\n");
-    cv::Size size{inputW_i, inputH_i};
-    for (size_t imgIdx = 0; imgIdx < batchSize; ++imgIdx) {
-        cv::Mat oriImage = images[imgIdx].clone();
-        networkSpace::PreprocessParser preParser;
-        preParser.size = size;
-        networkSpace::InputData input(preParser);  // 引用
-        auto& inputImage = input.inputImage;
-        input.oriImage = oriImage.clone();
-        auto& inputOriImage = input.oriImage;
-        letterbox(inputOriImage, inputImage, size, input.preParser);
-        this->baseAlgoParser.inOutPutData.input.push_back(input);  // 深拷贝
-        memcpy(
-            static_cast<char*>(in_h_ptr) // 起始地址
-                + imgIdx 
-                * inBinding.size_i // 单个维度所需空间
-                * inBinding.dsize_i, // 总的维度数量
-            inputImage.data,   // 当前图片数据
-            inputImage.total() * inputImage.elemSize()  // 当前图片所需空间
-        );
-        // printf("[INFO] commitImages-> 起始地址: %d\n", static_cast<char*>(in_h_ptr) + imgIdx * inBinding.size_i * inBinding.dsize_i);
-        // printf("[INFO] commitImages-> 偏移量: %d\n", imgIdx * inBinding.size_i * inBinding.dsize_i);
-        // printf("[INFO] commitImages-> 申请内存总量: %d\n", insize);
-        // printf("[INFO] imgIdx: %d, inBinding.size_i: %d, inBinding.dsize_i: %d, inputImage.data: %d, inputImage.total(): %d, inputImage.elemSize(): %d\n"
-        //     , imgIdx, inBinding.size_i, inBinding.dsize_i
-        //     , inputImage.data
-        //     , inputImage.total(), inputImage.elemSize());
-        // std::cout << "[INFO] commitImages-> Image dimensions: " << inputOriImage.cols << "x" << inputOriImage.rows << std::endl;
-    }
-    // printf("[INFO] commitImages-> 数据同步到GPU\n");
-    CHECK(cudaMemcpyAsync(engineParser.deviceInPtrs_vec[0],  // 单输入模型
-        in_h_ptr, insize, cudaMemcpyHostToDevice, this->stream));
-    free(in_h_ptr);
-
-    // printf("[INFO] commitImages-> 开始推理\n");
-    this->inferCore();
-    engineParser.curtBatch_i = 0;
-    // printf("[INFO] commitImages-> commitImages done.\n");
-    return true;
-}
-
-void DETECTOR::postprocess() {
-    std::vector<std::vector<networkSpace::Object>>& output_vec = this->baseAlgoParser.inOutPutData.output;
-    // printf("[INFO] postprocess-> output_vec.size() = %zu\n", output_vec.size());
+void Detector::postprocess() {
+    std::vector<std::vector<network_space::Object>>& output_vec = this->baseAlgoParser.inOutPutData.output;
+    RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kINFO, format_to_string("[%s] postprocess-> output_vec.size() = %zu", this->modelName.c_str(), output_vec.size()).c_str());
     output_vec.clear();
     auto& input_vec = this->baseAlgoParser.inOutPutData.input;
     int batch = input_vec.size();
-    // printf("[INFO] postprocess-> 后处理 batch = %d\n", batch);
+    RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kINFO, format_to_string("[%s] postprocess-> 后处理 batch = %d", this->modelName.c_str(), batch).c_str());
+    auto& vvoidptrHostOuts_ = this->baseAlgoParser.nvptrEngine_Parser.vvoidptrHostOuts_;
 
-    auto& hostOutPtrs_vec = this->baseAlgoParser.engineParser.hostOutPtrs_vec;
-
-    // 确保 hostOutPtrs_vec 的大小为 4
-    // printf("[INFO] postprocess-> hostOutPtrs_vec.size() = %zu\n", hostOutPtrs_vec.size());
-    if (hostOutPtrs_vec.size() != this->baseAlgoParser.engineParser.numOutputs_i) {
-        std::cerr << "postprocess-> Error: hostOutPtrs_vec size mismatch. Expected 4, got " << hostOutPtrs_vec.size() << std::endl;
+    RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kINFO, format_to_string("[%s] postprocess-> vvoidptrHostOuts_.size() = %zu", this->modelName.c_str(), vvoidptrHostOuts_.size()).c_str());
+    if (vvoidptrHostOuts_.size() != this->baseAlgoParser.nvptrEngine_Parser.iNumOutputs_) {
+        RUNTIME_LOG(sptrLogger_,nvinfer1::ILogger::Severity::kINFO,format_to_string("postprocess-> Error: vvoidptrHostOuts_ size mismatch. Expected 4, got %d ", vvoidptrHostOuts_.size()).c_str());
+        std::cerr 
+        << "postprocess-> Error: "
+        << this->modelName.c_str()
+        << " vvoidptrHostOuts_ size mismatch. Expected 4, got " << vvoidptrHostOuts_.size() << std::endl;
         return;
     }
-
-    // printf("[INFO] postprocess-> 当前batch = %d\n", batch);
-
-    // 打印 hostOutPtrs_vec[1] 中的所有检测框坐标
-    // printf("[INFO] postprocess-> 打印 hostOutPtrs_vec[1] 中的所有检测框坐标\n");
+    RUNTIME_LOG(
+        sptrLogger_,
+        nvinfer1::ILogger::Severity::kINFO,
+        format_to_string(
+            "[%s] postprocess-> 当前batch = %d",
+            this->modelName.c_str(), batch
+        ).c_str()
+    );
+    
+    RUNTIME_LOG(
+        sptrLogger_,
+        nvinfer1::ILogger::Severity::kINFO,
+        format_to_string(
+            "[%s] postprocess-> 打印 vvoidptrHostOuts_[1] 中的所有检测框坐标",
+            this->modelName.c_str()
+        ).c_str()
+    );
     int total_boxes = 0;
     for (int idx = 0; idx < batch; ++idx) {
-        int* num_dets = static_cast<int*>(hostOutPtrs_vec[0]) + idx;
+        int* num_dets = static_cast<int*>(vvoidptrHostOuts_[0]) + idx;
         total_boxes += *num_dets;
     }
-    float* boxes = static_cast<float*>(hostOutPtrs_vec[1]);
-    float* scores = static_cast<float*>(hostOutPtrs_vec[2]);
-    int* labels = static_cast<int*>(hostOutPtrs_vec[3]);
-
-    for (int i = 0; i < total_boxes; ++i) {
-        float* box_ptr = boxes + i * 4;
-        // printf("[DEBUG] boxes[%d] = (%f, %f, %f, %f)\n", i, box_ptr[0], box_ptr[1], box_ptr[2], box_ptr[3]);
-        // printf("[DEBUG] scores[%d] = %f\n", i, scores[i]);
-        // printf("[DEBUG] labels[%d] = %d\n", i, labels[i]);
-    }
+    float* boxes = static_cast<float*>(vvoidptrHostOuts_[1]);
+    float* scores = static_cast<float*>(vvoidptrHostOuts_[2]);
+    int* labels = static_cast<int*>(vvoidptrHostOuts_[3]);
 
     for (int idx = 0; idx < batch; ++idx) {
-        // printf("-------------------------%d-------------------------\n", idx);
-        std::vector<networkSpace::Object> subOutput_vec;
-        // 获取当前 batch 的输出指针
-        int* num_dets = static_cast<int*>(hostOutPtrs_vec[0]) + idx;
-        float* boxes = static_cast<float*>(hostOutPtrs_vec[1]) + 100 * 4 * idx;
-        float* scores = static_cast<float*>(hostOutPtrs_vec[2]) + 100 * idx;
-        int* labels = static_cast<int*>(hostOutPtrs_vec[3]) + 100 * idx;
+        std::vector<network_space::Object> subOutput_vec;
+        int* num_dets = static_cast<int*>(vvoidptrHostOuts_[0]) + idx;
+        float* boxes = static_cast<float*>(vvoidptrHostOuts_[1]) + 100 * 4 * idx;
+        float* scores = static_cast<float*>(vvoidptrHostOuts_[2]) + 100 * idx;
+        int* labels = static_cast<int*>(vvoidptrHostOuts_[3]) + 100 * idx;
 
-        size_t& oriImgHeight_i = input_vec[idx].preParser.oriImgHeight_i;
-        size_t& oriImgWidth_i = input_vec[idx].preParser.oriImgWidth_i;
+        size_t& iOriImgHeight_ = input_vec[idx].preParser.iOriImgHeight_;
+        size_t& iOriImgWidth_ = input_vec[idx].preParser.iOriImgWidth_;
         auto& ratio_f = input_vec[idx].preParser.ratio_f;
         float& padw_f = input_vec[idx].preParser.padw_f;
         float& padh_f = input_vec[idx].preParser.padh_f;
 
-        // std::cout << "[INFO] postprocess-> oriImgHeight_i = " << oriImgHeight_i << std::endl;
-        // std::cout << "[INFO] postprocess-> oriImgWidth_i = " << oriImgWidth_i << std::endl;
-        // std::cout << "[INFO] postprocess-> ratio_f = " << ratio_f << std::endl;
-        // std::cout << "[INFO] postprocess-> padw_f = " << padw_f << std::endl;
-        // std::cout << "[INFO] postprocess-> padh_f = " << padh_f << std::endl;
-        // printf("[INFO] postprocess-> *num_dets = %d\n", *num_dets);
-
-        // 调试输出：检查 boxes, scores, labels 的初始值
         for (int i = 0; i < *num_dets; ++i) {
-            float* box_ptr = boxes + i * 4;
-            // printf("[DEBUG] boxes[%d] = (%f, %f, %f, %f)\n", i, box_ptr[0], box_ptr[1], box_ptr[2], box_ptr[3]);
-            // printf("[DEBUG] scores[%d] = %f\n", i, scores[i]);
-            // printf("[DEBUG] labels[%d] = %d\n", i, labels[i]);
-        }
-
-        for (int i = 0; i < *num_dets; ++i) {
-            networkSpace::Object obj;
+            network_space::Object obj;
             float* ptr = boxes + i * 4;
+            
             float x0   = *ptr++ - padw_f;
             float y0   = *ptr++ - padh_f;
             float x1   = *ptr++ - padw_f;
             float y1   = *ptr - padh_f;
 
-            // 打印中间结果
-            // printf("[DEBUG] pre-clamp x0 = %f, y0 = %f, x1 = %f, y1 = %f\n", x0, y0, x1, y1);
-
-            x0         = this->clamp(x0 * ratio_f, 0.f, static_cast<float>(oriImgWidth_i));
-            y0         = this->clamp(y0 * ratio_f, 0.f, static_cast<float>(oriImgHeight_i));
-            x1         = this->clamp(x1 * ratio_f, 0.f, static_cast<float>(oriImgWidth_i));
-            y1         = this->clamp(y1 * ratio_f, 0.f, static_cast<float>(oriImgHeight_i));
-
-            // 打印最终结果
-            // printf("[DEBUG] post-clamp x0 = %f, y0 = %f, x1 = %f, y1 = %f\n", x0, y0, x1, y1);
+            x0         = this->clamp(x0 * ratio_f, 0.f, static_cast<float>(iOriImgWidth_));
+            y0         = this->clamp(y0 * ratio_f, 0.f, static_cast<float>(iOriImgHeight_));
+            x1         = this->clamp(x1 * ratio_f, 0.f, static_cast<float>(iOriImgWidth_));
+            y1         = this->clamp(y1 * ratio_f, 0.f, static_cast<float>(iOriImgHeight_));
 
             obj.rect.x      = x0;
             obj.rect.y      = y0;
@@ -200,70 +98,292 @@ void DETECTOR::postprocess() {
             obj.rect.height = y1 - y0;
             obj.prob_f      = scores[i];
             obj.label_i     = labels[i];
-
-            // 调试输出：检查最终的 obj 值
-            // printf("[INFO] postprocess-> obj.rect.x = %f\n", obj.rect.x);
-            // printf("[INFO] postprocess-> obj.rect.y = %f\n", obj.rect.y);
-            // printf("[INFO] postprocess-> obj.rect.width = %f\n", obj.rect.width);
-            // printf("[INFO] postprocess-> obj.rect.height = %f\n", obj.rect.height);
-            // printf("[INFO] postprocess-> obj.prob_f = %f\n", obj.prob_f);
-            // printf("[INFO] postprocess-> obj.label_i = %d\n", obj.label_i);
+            
+            // 补充逻辑 清除小框
+            if (obj.rect.width < 32 && obj.rect.height < 32) {
+                continue;   
+            }
+            RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kINFO, format_to_string("[%s] postprocess-> obj.rect.x = %f\n", this->modelName.c_str(), obj.rect.x).c_str());
+            RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kINFO, format_to_string("[%s] postprocess-> obj.rect.y = %f\n", this->modelName.c_str(), obj.rect.y).c_str());
+            RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kINFO, format_to_string("[%s] postprocess-> obj.rect.width = %f\n", this->modelName.c_str(), obj.rect.width).c_str());
+            RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kINFO, format_to_string("[%s] postprocess-> obj.rect.height = %f\n", this->modelName.c_str(), obj.rect.height).c_str());
+            RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kINFO, format_to_string("postprocess-> obj.prob_f = %f\n", this->modelName.c_str(), obj.prob_f).c_str());
+            RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kINFO, format_to_string("[%s] postprocess-> obj.label_i = %d\n", this->modelName.c_str(), obj.label_i).c_str());
             subOutput_vec.push_back(obj);
         }
-
-        // 将当前 batch 的结果添加到 output_vec 中
         output_vec.push_back(subOutput_vec);
+    }
+    this->baseAlgoParser.nvptrEngine_Parser.reset_EngineParser_vvoidptrX();
+}
+
+
+// Helper function to count existing _src.jpg files in the images folder
+size_t countExistingSrcImages(const std::string& imagesFolderPath) {
+    size_t count = 0;
+    DIR *dir;
+    struct dirent *ent;
+    if ((dir = opendir(imagesFolderPath.c_str())) != NULL) {
+        while ((ent = readdir(dir)) != NULL) {
+            std::string fileName(ent->d_name);
+            if (fileName.size() > 8 && fileName.substr(fileName.size() - 8) == "_src.jpg") {
+                count++;
+            }
+        }
+        closedir(dir);
+    }
+    return count;
+}
+
+
+// // 仅保存检测结果
+// void Detector::draw_boxes(size_t save_img_max_num) {
+//     std::string logDirPath = this->sptrLogger_->logDirPath;
+//     std::string imagesFolderPath = logDirPath + "/images";
+//     // 创建主 images 文件夹
+//     if (!std::filesystem::exists(imagesFolderPath)) {
+//         std::filesystem::create_directory(imagesFolderPath);
+//     }
+//     // 创建按日期命名的子文件夹
+//     std::string currentDateFolder;
+//     createDateFolder(imagesFolderPath, currentDateFolder);
+//     // 清理超过 5 天的文件夹
+//     cleanupOldFolders(imagesFolderPath);
+//     // 统计当前日期文件夹中已有的 _src.jpg 文件数量
+//     size_t startIndex = 0;
+//     for (const auto& entry : std::filesystem::directory_iterator(currentDateFolder)) {
+//         if (entry.path().extension() == ".jpg" && entry.path().filename().string().find("_src.jpg") != std::string::npos) {
+//             startIndex++;
+//         }
+//     }
+//     std::vector<std::vector<network_space::Object>> output_vec = this->baseAlgoParser.inOutPutData.output;
+//     std::vector<network_space::InputData> input_vec = this->baseAlgoParser.inOutPutData.input;
+//     if (input_vec.size() != output_vec.size()) {
+//         RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kERROR,
+//                     "Error: The number of input images and the number of object batches do not match.");
+//         return;
+//     }
+//     size_t savedCount = 0; // 当前日期文件夹中保存的图片计数
+//     for (size_t i = 0; i < input_vec.size() && savedCount < save_img_max_num; ++i) {
+//         // 检查是否有检测结果
+//         if (output_vec[i].empty()) {
+//             continue; // 如果没有检测结果，跳过该图片
+//         }
+//         cv::Mat originalImage = input_vec[i].oriImage.clone();
+//         cv::Mat detectedImage = input_vec[i].oriImage.clone();
+//         if (originalImage.empty() || detectedImage.empty()) {
+//             RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kERROR,
+//                         format_to_string("Error: Failed to clone image at index %zu", i).c_str());
+//             continue;
+//         }
+//         // 保存原始图像
+//         std::ostringstream oss;
+//         oss << currentDateFolder << "/" << startIndex + savedCount << "_src.jpg";
+//         std::string srcImagePath = oss.str();
+//         if (!cv::imwrite(srcImagePath, originalImage)) {
+//             RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kERROR,
+//                         format_to_string("Error: Failed to save image to %s", srcImagePath.c_str()).c_str());
+//             continue; // 如果保存失败，跳过后续操作
+//         }
+//         // 绘制检测框
+//         for (const auto& obj : output_vec[i]) {
+//             cv::Scalar color = cv::Scalar(0, 0, 255); // 红色
+//             cv::rectangle(detectedImage, obj.rect, color, 2);
+//             char text[256];
+//             sprintf(text, "%d %.1f%%", obj.label_i, obj.prob_f * 100);
+//             int baseLine = 0;
+//             cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
+//             int x = static_cast<int>(obj.rect.x);
+//             int y = static_cast<int>(obj.rect.y) + 1;
+//             if (y > detectedImage.rows) {
+//                 y = detectedImage.rows;
+//             }
+//             cv::rectangle(detectedImage, cv::Rect(x, y, label_size.width, label_size.height + baseLine), {0, 0, 255}, -1);
+//             cv::putText(detectedImage, text, cv::Point(x, y + label_size.height), cv::FONT_HERSHEY_SIMPLEX, 0.4, {255, 255, 255}, 1);
+//         }
+//         // 保存带检测框的图像
+//         oss.str(""); // 清空字符串流
+//         oss << currentDateFolder << "/" << startIndex + savedCount << "_det.jpg";
+//         std::string detImagePath = oss.str();
+//         if (!cv::imwrite(detImagePath, detectedImage)) {
+//             RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kERROR,
+//                         format_to_string("Error: Failed to save image to %s", detImagePath.c_str()).c_str());
+//             continue; // 如果保存失败，跳过后续操作
+//         }
+//         // 生成 JSON 文件
+//         generateJsonFile(srcImagePath, originalImage, output_vec[i]);
+//         // 更新保存计数
+//         savedCount++;
+//     }
+// }
+
+
+// 保存全部图片
+void Detector::draw_boxes(size_t save_img_max_num) {
+    std::string logDirPath = this->sptrLogger_->logDirPath;
+    std::string imagesFolderPath = logDirPath + "/images";
+    // 创建主 images 文件夹
+    if (!std::filesystem::exists(imagesFolderPath)) {
+        std::filesystem::create_directory(imagesFolderPath);
+    }
+    // 创建按日期命名的子文件夹
+    std::string currentDateFolder;
+    createDateFolder(imagesFolderPath, currentDateFolder);
+    // 清理超过 5 天的文件夹
+    cleanupOldFolders(imagesFolderPath);
+    // 统计当前日期文件夹中已有的 _src.jpg 文件数量
+    size_t startIndex = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(currentDateFolder)) {
+        if (entry.path().extension() == ".jpg" && entry.path().filename().string().find("_src.jpg") != std::string::npos) {
+            startIndex++;
+        }
+    }
+    std::vector<std::vector<network_space::Object>> output_vec = this->baseAlgoParser.inOutPutData.output;
+    std::vector<network_space::InputData> input_vec = this->baseAlgoParser.inOutPutData.input;
+    if (input_vec.size() != output_vec.size()) {
+        RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kERROR,
+                    "Error: The number of input images and the number of object batches do not match.");
+        return;
+    }
+    size_t savedCount = 0; // 当前日期文件夹中保存的图片计数
+    for (size_t i = 0; i < input_vec.size() && savedCount < save_img_max_num; ++i) {
+        cv::Mat originalImage = input_vec[i].oriImage.clone();
+        cv::Mat detectedImage = input_vec[i].oriImage.clone();
+        if (originalImage.empty() || detectedImage.empty()) {
+            RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kERROR,
+                        format_to_string("Error: Failed to clone image at index %zu", i).c_str());
+            continue;
+        }
+        // 保存原始图像
+        std::ostringstream oss;
+        oss << currentDateFolder << "/" << startIndex + savedCount << "_src.jpg";
+        std::string srcImagePath = oss.str();
+        if (!cv::imwrite(srcImagePath, originalImage)) {
+            RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kERROR,
+                        format_to_string("Error: Failed to save image to %s", srcImagePath.c_str()).c_str());
+            continue; // 如果保存失败，跳过后续操作
+        }
+        // 绘制检测框（如果有检测结果）
+        if (!output_vec[i].empty()) {
+            for (const auto& obj : output_vec[i]) {
+                cv::Scalar color = cv::Scalar(0, 0, 255); // 红色
+                cv::rectangle(detectedImage, obj.rect, color, 2);
+                char text[256];
+                sprintf(text, "%d %.1f%%", obj.label_i, obj.prob_f * 100);
+                int baseLine = 0;
+                cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
+                int x = static_cast<int>(obj.rect.x);
+                int y = static_cast<int>(obj.rect.y) + 1;
+                if (y > detectedImage.rows) {
+                    y = detectedImage.rows;
+                }
+                cv::rectangle(detectedImage, cv::Rect(x, y, label_size.width, label_size.height + baseLine), {0, 0, 255}, -1);
+                cv::putText(detectedImage, text, cv::Point(x, y + label_size.height), cv::FONT_HERSHEY_SIMPLEX, 0.4, {255, 255, 255}, 1);
+            }
+        }
+        // 保存带检测框的图像
+        oss.str(""); // 清空字符串流
+        oss << currentDateFolder << "/" << startIndex + savedCount << "_det.jpg";
+        std::string detImagePath = oss.str();
+        if (!cv::imwrite(detImagePath, detectedImage)) {
+            RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kERROR,
+                        format_to_string("Error: Failed to save image to %s", detImagePath.c_str()).c_str());
+            continue; // 如果保存失败，跳过后续操作
+        }
+        // 生成 JSON 文件（如果有检测结果）
+        if (!output_vec[i].empty()) {
+            generateJsonFile(srcImagePath, originalImage, output_vec[i]);
+        }
+        // 更新保存计数
+        savedCount++;
     }
 }
 
-void DETECTOR::draw_boxes() {
-    std::vector<std::vector<networkSpace::Object>>& output_vec = this->baseAlgoParser.inOutPutData.output;
-    std::vector<networkSpace::InputData>& input_vec = this->baseAlgoParser.inOutPutData.input;
 
-    if (input_vec.size() != output_vec.size()) {
-        std::cerr << "Error: The number of input images and the number of object batches do not match." << std::endl;
-        return;
+void Detector::createDateFolder(const std::string& imagesFolderPath, std::string& currentDateFolder) {
+    // 获取当前日期
+    time_t now = time(nullptr);
+    tm* localTime = localtime(&now);
+    char dateBuffer[9];
+    strftime(dateBuffer, sizeof(dateBuffer), "%Y%m%d", localTime);
+    std::string dateStr(dateBuffer);
+
+    // 创建日期文件夹
+    currentDateFolder = imagesFolderPath + "/" + dateStr + "_images";
+    if (!std::filesystem::exists(currentDateFolder)) {
+        std::filesystem::create_directory(currentDateFolder);
     }
-    
+}
 
-    for (size_t i = 0; i < input_vec.size(); ++i) {
-        cv::Mat res = input_vec[i].oriImage.clone();
-        // cv::Mat res = input_vec[i].oriImage.clone();  // 克隆原始图像用于绘制
+void Detector::cleanupOldFolders(const std::string& imagesFolderPath) {
+    std::vector<std::pair<std::string, std::string>> folders; // 存储文件夹路径和日期
 
-        if (res.empty()) {
-            std::cerr << "Error: Failed to clone image at index " << i  << std::endl;
-            continue;
-        }
-        // std::cout << "Image dimensions: " << res.cols << "x" << res.rows << std::endl;
-
-        for (const auto& obj : output_vec[i]) {
-            cv::Scalar color = cv::Scalar({0, 0, 255});
-            cv::rectangle(res, obj.rect, color, 2);
-
-            char text[256];
-            sprintf(text, "%zu %.1f%%", obj.label_i, obj.prob_f * 100);
-
-            int baseLine = 0;
-            cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
-
-            int x = static_cast<int>(obj.rect.x);
-            int y = static_cast<int>(obj.rect.y) + 1;
-
-            if (y > res.rows) {
-                y = res.rows;
+    // 遍历所有文件夹，提取日期
+    for (const auto& entry : std::filesystem::directory_iterator(imagesFolderPath)) {
+        if (std::filesystem::is_directory(entry)) {
+            std::string folderName = entry.path().filename().string();
+            if (folderName.find("_images") != std::string::npos) {
+                std::string dateStr = folderName.substr(0, 8); // 提取 YYYYMMDD
+                folders.emplace_back(dateStr, entry.path().string());
             }
-
-            cv::rectangle(res, cv::Rect(x, y, label_size.width, label_size.height + baseLine), {0, 0, 255}, -1);
-
-            cv::putText(res, text, cv::Point(x, y + label_size.height), cv::FONT_HERSHEY_SIMPLEX, 0.4, {255, 255, 255}, 1);
         }
+    }
 
-        // 将绘制结果保存或显示
-        std::string output_path = "/data/01_Project/algoLibraryBatch/res/det_result_" + std::to_string(i) + ".jpg";
-        if (!cv::imwrite(output_path, res)) {
-            std::cerr << "Error: Failed to save image to " << output_path << std::endl;
-        } else {
-            // std::cout << "Saved image to " << output_path << std::endl;
-        }
+    // 按日期排序（从旧到新）
+    std::sort(folders.begin(), folders.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+
+    // 删除超过 5 天的文件夹
+    while (folders.size() > 5) {
+        std::filesystem::remove_all(folders.front().second);
+        folders.erase(folders.begin());
+    }
+}
+
+void Detector::generateJsonFile(const std::string& imagePath, const cv::Mat& image, const std::vector<network_space::Object>& objects) {
+    // 构造 JSON 文件路径
+    std::string jsonPath = imagePath.substr(0, imagePath.rfind('.')) + ".json";
+
+    // 构造 JSON 数据
+    nlohmann::json jsonData; // 使用 nlohmann/json 库
+    jsonData["version"] = "2.4.4";
+    jsonData["flags"] = {};
+    jsonData["imagePath"] = std::filesystem::path(imagePath).filename().string();
+    jsonData["imageData"] = nullptr;
+    jsonData["imageHeight"] = image.rows;
+    jsonData["imageWidth"] = image.cols;
+    jsonData["text"] = "";
+    jsonData["description"] = "";
+
+    // 填充 shapes 数组
+    jsonData["shapes"] = nlohmann::json::array();
+    for (const auto& obj : objects) {
+        nlohmann::json shape;
+        shape["label"] = std::to_string(obj.label_i); // 转换为字符串
+        shape["score"] = obj.prob_f;
+        shape["points"] = {
+            {obj.rect.x, obj.rect.y},
+            {obj.rect.x + obj.rect.width, obj.rect.y},
+            {obj.rect.x + obj.rect.width, obj.rect.y + obj.rect.height},
+            {obj.rect.x, obj.rect.y + obj.rect.height}
+        };
+        shape["group_id"] = nullptr;
+        shape["description"] = "";
+        shape["difficult"] = false;
+        shape["shape_type"] = "rectangle";
+        shape["flags"] = {};
+        shape["attributes"] = {};
+        shape["kie_linking"] = {};
+        jsonData["shapes"].push_back(shape);
+    }
+
+    // 写入 JSON 文件
+    std::ofstream jsonFile(jsonPath);
+    if (jsonFile.is_open()) {
+        jsonFile << jsonData.dump(4); // 格式化输出，缩进 4 个空格
+        jsonFile.close();
+    } else {
+        RUNTIME_LOG(sptrLogger_, nvinfer1::ILogger::Severity::kERROR,
+                    format_to_string("Error: Failed to write JSON file to %s", jsonPath.c_str()).c_str());
     }
 }
